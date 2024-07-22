@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from typing import override, Callable
-import inspect, sys
+import inspect, sys, time, os
 
 class Command:
 	...
@@ -200,8 +200,18 @@ class Help(Command):
 			_sub_command_map[type(_command_map[command])][sub_command].print_help()
 		return True
 
+class Reload(Command):
+	def __init__(self):
+		super().__init__(["reload", "rel"], description="Reload the program.", long_description="Reloads the program with the same arguments supplied.\nThis is mainly for development purposes.")
+
+	def _consume(self):
+		run_command(Quit())
+		print(f"[{time.ctime(time.time())}] Reloading...")
+		os.execl(sys.executable, sys.executable, *sys.argv)
+
 add_command(Quit())
 add_command(Help())
+add_command(Reload())
 
 def run_command(command: Command | str, *args, **kwargs) -> bool:
 	global _command_map
