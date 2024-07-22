@@ -2,7 +2,13 @@ from typing import Callable
 import inspect, time, sys, os
 
 def _valid_command(name: str) -> bool:
-	return name and name[0].isalpha() and len(name.split()) == 1 and name.isascii() and name.islower() and "=" not in name and "*" not in name
+	return _valid_word(name) and "*" not in name
+
+def _valid_word(word: str) -> bool:
+	return word and len(word.split()) == 1 and word.isascii() and _valid_equal_signs(word)
+
+def _valid_equal_signs(word: str) -> bool:
+	return "=" not in word or word.count("=") == 1 and word.startswith("=")
 
 def _check_list(errs, errstr):
 	errs = list(errs)
@@ -197,12 +203,12 @@ def main():
 		if not command:
 			continue
 
-		allargs = command.strip().split(" ")
+		allargs = command.strip().split()
 
 		try:
 			run(allargs[0],
-				*[arg for arg in allargs[1:] if "=" not in arg], 
-				**{arg.split("=", 1)[0]: arg.split("=", 1)[1] for arg in allargs[1:] if "=" in arg})
+				*[arg for arg in allargs[1:] if _valid_equal_signs(arg)], 
+				**{arg[0] + arg[1:].split("=", 1)[0]: arg[1:].split("=", 1)[1] for arg in allargs[1:] if not _valid_equal_signs(arg)})
 		except CommandException as e:
 			print("Error:", e)
 		except TypeError as e:
