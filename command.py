@@ -104,7 +104,7 @@ _subcommand_map: dict[CommandData, dict[str, CommandData]] = {}
 _quit = False
 
 # decorator for registering a command
-def register(name: str | list[str] | None = None, *, parent: Callable | CommandData | None = None, desc: str | None = None, long_desc: str | None = None):
+def register(name: str | list[str] | None = None, *, on_load: Callable[[], bool] | None = None, parent: Callable | CommandData | None = None, desc: str | None = None, long_desc: str | None = None):
 	aname = name
 	aparent = parent
 	def inner(func: Callable):
@@ -122,6 +122,8 @@ def register(name: str | list[str] | None = None, *, parent: Callable | CommandD
 			command_data = CommandData(func, name, parent=parent, desc=desc, long_desc=long_desc)
 			command_map = _subcommand_map[parent] if parent else _command_map
 			_check_list((name for name in command_data.names if name in command_map), "Command naming conflict")
+			if on_load and not on_load():
+				raise CommandException(f"Load function of {command_data} failed")
 
 			# no errors should occur after this
 			func.command_data = command_data
