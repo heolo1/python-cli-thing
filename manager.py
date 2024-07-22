@@ -1,7 +1,7 @@
-import menu, api as _
+import command, api as _
 
 def main():
-	menu.run_commands()
+	command.main()
 
 if __name__ == "__main__":
 	main()

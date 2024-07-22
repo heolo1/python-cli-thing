@@ -1,8 +1,5 @@
-import menu
-from typing import override
+import command
 
-class API(menu.Command):
-	def __init__(self):
-		super().__init__("api")
-
-menu.add_command(API())
+@command.register()
+def api():
+	print("api")
