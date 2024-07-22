@@ -204,6 +204,7 @@ class Reload(Command):
 	def __init__(self):
 		super().__init__(["reload", "rel"], description="Reload the program.", long_description="Reloads the program with the same arguments supplied.\nThis is mainly for development purposes.")
 
+	@override
 	def _consume(self):
 		run_command(Quit())
 		print(f"[{time.ctime(time.time())}] Reloading...")
