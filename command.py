@@ -180,14 +180,6 @@ def reload():
 	print(f"[{time.ctime(time.time())}] Reloading...")
 	os.execl(sys.executable, sys.executable, *sys.argv)
 
-@register(desc="Test",long_desc="Test Test")
-def test(*args, **kwargs):
-	print("hi", args, kwargs)
-
-@register("a", parent=test, desc="test a", long_desc="Test Test Test")
-def test_a(*args, **kwargs):
-	print("hi a", args, kwargs)
-
 def run(command: Callable | str, *args, **kwargs):
 	global _command_map
 	if iscommandfunc(command):
