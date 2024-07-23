@@ -5,7 +5,7 @@ def _valid_command(name: str) -> bool:
 	return _valid_word(name) and "*" not in name
 
 def _valid_word(word: str) -> bool:
-	return word and len(word.split()) == 1 and word.isascii() and _valid_equal_signs(word)
+	return word and len(word.split()) == 1 and word.isascii() and _valid_equal_signs(word) and not word.startswith("-")
 
 def _valid_equal_signs(word: str) -> bool:
 	return "=" not in word or word.count("=") == 1 and word.startswith("=")
@@ -14,15 +14,18 @@ def _check_list(errs, errstr):
 	errs = list(errs)
 	if errs:
 		raise CommandException(f"{errstr}{"" if len(errs) == 1 else "s"}: " + repr(errs[0] if len(errs) == 1 else errs))
-	
+
+def istruthy(word: str) -> bool:
+	return word.lower() in ["y", "yes", "true"]
+
 def iscommandfunc(obj: any):
 	return hasattr(obj, "command_data")
 
 class CommandData:
-	def __init__(self, func: Callable, name: str | list[str], *, parent: "CommandData | None" = None, desc: str | None, long_desc: str | None):
+	def __init__(self, func: Callable, name: str | list[str], parent: "CommandData | None" = None):
 		self.func = func
-		self.desc = desc
-		self.long_desc = long_desc
+		self.desc: str | None = None
+		self.long_desc: str | None = None
 		self.parent = parent
 
 		# names
@@ -37,6 +40,10 @@ class CommandData:
 
 		_check_list((name for name in self.names if not _valid_command(name)), "Invalid command name")
 
+		if hasattr(func, "command_processors"):
+			for processor in func.command_processors:
+				processor(self)
+
 	def __repr__(self):
 		return f"Command[{self.fullname()}{"*" if self.aliases else ""}]"
 	
@@ -50,9 +57,9 @@ class CommandData:
 	def _signature(self) -> inspect.Signature:
 		return inspect.signature(self.func)
 	
-	def print_help_short(self):
-		print(self.name, end="")
-		if self.has_subcommands:
+	def print_help_short(self, prefix="", star_subcommands=True):
+		print(prefix + self.name, end="")
+		if star_subcommands and self.has_subcommands:
 			print("*", end="")
 		if self.aliases:
 			print(f" ({", ".join(self.aliases)})", end="")
@@ -60,7 +67,7 @@ class CommandData:
 			print(f" - {self.desc}", end="")
 		print()
 
-	def print_help(self):
+	def print_help(self, all_subcommands=False):
 		print(self.fullname())
 		if self.aliases:
 			print(f"Aliases: {", ".join(self.aliases)}")
@@ -74,8 +81,12 @@ class CommandData:
 			print("No description found")
 		if self.has_subcommands:
 			print("\nSubcommands:")
-			for command in self.subcommands:
-				command.print_help_short()
+			if all_subcommands:
+				for prefix, command in self.all_subcommands:
+					command.print_help_short(prefix, False)
+			else:
+				for command in self.subcommands:
+					command.print_help_short()
 
 	def fullname(self, name: str | None = None):
 		if not name:
@@ -96,6 +107,11 @@ class CommandData:
 	def subcommand(self, command):
 		return _subcommand_map[self][command]
 
+	@property
+	def all_subcommands(self) -> list[tuple[str, "CommandData"]]:
+		return [(prefix, command) for subcommand in self.subcommands 
+		  for prefix, command in [("", subcommand)] + [(f"{subcommand.name} {sprefix}", ssubcommand) for sprefix, ssubcommand in subcommand.all_subcommands]]
+
 class CommandException(Exception): ...
 
 _commands: list[CommandData] = []
@@ -104,7 +120,7 @@ _subcommand_map: dict[CommandData, dict[str, CommandData]] = {}
 _quit = False
 
 # decorator for registering a command
-def register(name: str | list[str] | None = None, *, on_load: Callable[[], bool] | None = None, parent: Callable | CommandData | None = None, desc: str | None = None, long_desc: str | None = None):
+def register(name: str | list[str] | None = None, parent: Callable | CommandData | None = None, *, on_load: Callable[[], bool] | None = None):
 	aname = name
 	aparent = parent
 	def inner(func: Callable):
@@ -119,7 +135,7 @@ def register(name: str | list[str] | None = None, *, on_load: Callable[[], bool]
 					raise CommandException(f"Invalid parent: {parent} is not a command function or CommandData")
 				_subcommand_map.setdefault(parent, {})
 
-			command_data = CommandData(func, name, parent=parent, desc=desc, long_desc=long_desc)
+			command_data = CommandData(func, name, parent)
 			command_map = _subcommand_map[parent] if parent else _command_map
 			_check_list((name for name in command_data.names if name in command_map), "Command naming conflict")
 			if on_load and not on_load():
@@ -147,8 +163,29 @@ def register(name: str | list[str] | None = None, *, on_load: Callable[[], bool]
 		return func
 	return inner
 
-@register(desc="Shows the help menu.",
-		long_desc="Displays a description of the command.\nRun \"help <command name>\" to view a further description of a command.")
+def _cmd_deco_wrap(wrapper):
+	def outer(*args, **kwargs):
+		def inner(func: Callable):
+			if iscommandfunc(func):
+				wrapper(*args, **kwargs)(func.command_data)
+			else:
+				if not hasattr(func, "command_processors"):
+					func.command_processors = []
+				func.command_processors.append(wrapper(*args, **kwargs))
+			return func
+		return inner
+	return outer
+
+@_cmd_deco_wrap
+def desc(desc: str | None = None, long_desc: str | None = None):
+	def inner(self: CommandData):
+		self.desc = desc
+		self.long_desc = long_desc
+	return inner
+
+@register()
+@desc("Shows the help menu.",
+	  "Displays a description of the command.\nRun \"help <command name>\" to view a further description of a command.")
 def help(command=None, *args):
 	global _commands, _command_map
 	
@@ -172,17 +209,17 @@ def help(command=None, *args):
 	else:
 		raise CommandException(f"{command} - Unknown command\nRun \"help\" to view a list of commands.")
 
-@register(["quit", "exit", "close"],
-		desc="Quit the command prompt.",
-		long_desc="Quits the command prompt and saves everything as necessary.")
+@register(["quit", "exit", "close"])
+@desc("Quit the command prompt.",
+	  "Quits the command prompt and saves everything as necessary.")
 def quit():
 	global _quit
 	_quit = True
 	print("Stopping...")
 
-@register(["reload", "rel"],
-		desc="Reload the program.",
-		long_desc="Reloads the program with the same arguments supplied.\nThis is mainly for development purposes.")
+@register(["reload", "rel"])
+@desc("Reload the program.",
+	  "Reloads the program with the same arguments supplied.\nThis is mainly for development purposes.")
 def reload():
 	run(quit)
 	print(f"[{time.ctime(time.time())}] Reloading...")
