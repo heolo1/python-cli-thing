@@ -1,14 +1,12 @@
 from typing import Callable
+from types import MappingProxyType
 import inspect, time, sys, os
 
 def _valid_command(name: str) -> bool:
 	return _valid_word(name) and "*" not in name
 
 def _valid_word(word: str) -> bool:
-	return word and len(word.split()) == 1 and word.isascii() and _valid_equal_signs(word) and not word.startswith("-")
-
-def _valid_equal_signs(word: str) -> bool:
-	return "=" not in word or word.count("=") == 1 and word.startswith("=")
+	return word and len(word.split()) == 1 and word.isascii()
 
 def _check_list(errs, errstr):
 	errs = list(errs)
@@ -38,6 +36,8 @@ class CommandData:
 			self.names = name
 			self.aliases = set(name[1:])
 
+		self.flag_mapper: Callable[(...), tuple[list[any], dict[str, any]]] = fm_none()(self._signature.parameters)
+
 		_check_list((name for name in self.names if not _valid_command(name)), "Invalid command name")
 
 		if hasattr(func, "command_processors"):
@@ -47,11 +47,15 @@ class CommandData:
 	def __repr__(self):
 		return f"Command[{self.fullname()}{"*" if self.aliases else ""}]"
 	
-	def __call__(self, *args, **kwargs):
-		if args and self.has_subcommand(args[0]):
-			return self.subcommand(args[0])(*args[1:], **kwargs)
-		else:
-			return self.func(*args, **kwargs)
+	def __call__(self, arg: str | None = None, *raw_args: str):
+		if not arg:
+			return self.func()
+		elif self.has_subcommand(arg):
+			return self.subcommand(arg)(*raw_args)
+		
+		args, kwargs = self.flag_mapper(arg, *raw_args)
+
+		return self.func(*args, **kwargs)
 
 	@property
 	def _signature(self) -> inspect.Signature:
@@ -176,12 +180,49 @@ def _cmd_deco_wrap(wrapper):
 		return inner
 	return outer
 
+def _flag_mapper(func: Callable):
+	func.is_flag_mapper = True
+	return func
+
+def _is_flag_mapper(func: Callable):
+	return hasattr(func, "is_flag_mapper")
+
 @_cmd_deco_wrap
 def desc(desc: str | None = None, long_desc: str | None = None):
 	def inner(self: CommandData):
 		self.desc = desc
 		self.long_desc = long_desc
 	return inner
+
+@_cmd_deco_wrap
+def flags(flag_mapper: "FlagMapperType"):
+	if not _is_flag_mapper(flag_mapper):
+		raise AttributeError(f"flag_mapper {flag_mapper} passed in is not a FlagMapperType")
+
+	def inner(self: CommandData):
+		self.flag_mapper = flag_mapper
+	return inner
+
+# @_cmd_deco_wrap
+# def map_flags(**kwargs: dict[str, str | list[str]]):
+# 	def inner(self: CommandData):
+# 		...
+# 	return inner
+
+# @_flag_mapper
+# def fm_none(*args: str) -> tuple[list[str], dict]:
+# 	return args, {}
+
+FlagMapper = Callable[(...), tuple[list[any], dict[str, any]]]
+FlagMapperType = Callable[(...), Callable[[MappingProxyType[str, inspect.Parameter]], FlagMapper]]
+
+@_flag_mapper
+def fm_none() -> Callable[[MappingProxyType[str, inspect.Parameter]], FlagMapper]:
+	def inner1(_: MappingProxyType[str, inspect.Parameter]) -> FlagMapper:
+		def inner2(*args: str) -> tuple[list[any], dict[str, any]]:
+			return args, {}
+		return inner2
+	return inner1
 
 @register()
 @desc("Shows the help menu.",
@@ -225,12 +266,12 @@ def reload():
 	print(f"[{time.ctime(time.time())}] Reloading...")
 	os.execl(sys.executable, sys.executable, *sys.argv)
 
-def run(command: Callable | str, *args, **kwargs):
+def run(command: Callable | str, *args):
 	global _command_map
 	if iscommandfunc(command):
-		command(*args, **kwargs)
+		command(*args)
 	elif isinstance(command, str) and command.lower() in _command_map:
-		_command_map[command.lower()](*args, **kwargs)
+		_command_map[command.lower()](*args)
 	else:
 		raise CommandException(f"Invalid command: {command}\nRun \"help\" to see list of commands")
 
@@ -238,16 +279,12 @@ def main():
 	global _quit
 	_quit = False
 	while True:
-		command = input("> ")
+		command = input("> ").strip()
 		if not command:
 			continue
 
-		allargs = command.strip().split()
-
 		try:
-			run(allargs[0],
-				*[arg for arg in allargs[1:] if _valid_equal_signs(arg)], 
-				**{arg[0] + arg[1:].split("=", 1)[0]: arg[1:].split("=", 1)[1] for arg in allargs[1:] if not _valid_equal_signs(arg)})
+			run(*command.split())
 		except CommandException as e:
 			print("Error:", e)
 		except TypeError as e:
