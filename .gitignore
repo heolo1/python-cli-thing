@@ -1,2 +1,3 @@
 *.json
+.things/**
 __pycache__
