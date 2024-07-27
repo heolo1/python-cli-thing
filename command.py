@@ -48,11 +48,11 @@ class CommandData:
 	def __repr__(self):
 		return f"Command[{self.fullname()}{"*" if self.aliases else ""}]"
 	
-	def __call__(self, arg: str | None = None, *raw_args: str):
+	def __call__(self, arg: str | None = None, *raw_args: str, no_sub=False):
 		if not arg:
 			return self.func()
-		elif self.has_subcommand(arg):
-			return self.subcommand(arg)(*raw_args)
+		elif not no_sub and self.has_subcommand(arg):
+			return self.subcommand(arg)(*raw_args, no_sub=arg.endswith("*"))
 		
 		args, kwargs = self.flag_mapper(arg, *raw_args)
 
@@ -103,14 +103,14 @@ class CommandData:
 		return self in _subcommand_map
 	
 	def has_subcommand(self, command):
-		return self.has_subcommands and command in _subcommand_map[self]
+		return self.has_subcommands and (command in _subcommand_map[self] or command.endswith("*") and command[:-1] in _subcommand_map[self])
 	
 	@property
 	def subcommands(self) -> list["CommandData"]:
 		return list(set(_subcommand_map[self].values())) if self.has_subcommands else []
 
 	def subcommand(self, command):
-		return _subcommand_map[self][command]
+		return _subcommand_map[self][command[:-1] if command.endswith("*") else command]
 
 	@property
 	def all_subcommands(self) -> list[tuple[str, "CommandData"]]:
@@ -250,6 +250,8 @@ def run(command: Callable | str, *args):
 		command(*args)
 	elif isinstance(command, str) and command.lower() in _command_map:
 		_command_map[command.lower()](*args)
+	elif isinstance(command, str) and command.endswith("*") and command[:-1].lower() in _command_map:
+		_command_map[command[:-1].lower()](*args, no_sub=True)
 	else:
 		raise CommandException(f"Invalid command: {command}\nRun \"help\" to see list of commands")
 
