@@ -210,15 +210,16 @@ def help(command=None, *args):
 		command.command_data.print_help()
 	elif isinstance(command, CommandData):
 		command.print_help()
-	elif command in _command_map:
+	elif command.lower() in _command_map:
 		# start searching through commands and subcommands
+		command = _command_map[command.lower()]
 		for arg in args:
-			if command + " " + arg in _command_map:
-				command = _command_map[command + " " + arg].fullname()
+			if command.has_subcommand(arg.lower()):
+				command = command.subcommand(arg.lower())
 			else:
-				_command_map[command].print_help()
+				command.print_help()
 				raise CommandException(f"{arg} - Unknown subcommand")
-		_command_map[command].print_help()			
+		command.print_help()
 	else:
 		raise CommandException(f"{command} - Unknown command\nRun \"help\" to view a list of commands.")
 
