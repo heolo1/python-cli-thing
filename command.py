@@ -19,66 +19,114 @@ def istruthy(word: str) -> bool:
 
 class Command:
 	def __init__(self, func: Callable, name: str | list[str], parent: "Command | None" = None):
-		self.func = func
-		self.desc: str | None = None
-		self.long_desc: str | None = None
-		self.parent = parent
+		self._func = func
+		self._desc: str | None = None
+		self._long_desc: str | None = None
+		self._parent = parent
+		self.flag_mapper = FlagMapper()
 
 		# names
 		if isinstance(name, str):
-			self.name = name
-			self.names = [ name ]
-			self.aliases = set()
+			self._name = name
+			self._names = [ name ]
+			self._aliases = set()
 		elif isinstance(name, list):
-			self.name = name[0]
-			self.names = name
-			self.aliases = set(name[1:])
-
-		self.flag_mapper = FlagMapper()
+			self._name = name[0]
+			self._names = name
+			self._aliases = set(name[1:])
 
 		_check_list((name for name in self.names if not _valid_command(name)), "Invalid command name")
 
 		if hasattr(func, "command_processors"):
 			for processor in func.command_processors:
 				processor(self)
+			del func.command_processors
 
 	def __repr__(self):
-		return f"Command[{self.fullname()}{"*" if self.aliases else ""}]"
+		return f"Command[{self.fullname}{"*" if self.aliases else ""}]"
 	
 	def __call__(self, arg: str | None = None, *raw_args: str, no_sub=False):
 		if not arg:
-			return self.func()
+			return self._func()
 		elif not no_sub and self.has_subcommand(arg):
 			return self.subcommand(arg)(*raw_args, no_sub=arg.endswith("*"))
 		
 		args, kwargs = self.flag_mapper(arg, *raw_args)
 
-		return self.func(*args, **kwargs)
+		return self._func(*args, **kwargs)
 
 	@property
-	def _signature(self) -> inspect.Signature:
-		return inspect.signature(self.func)
+	def parent(self) -> "Command | None": return self._parent
+
+	@property
+	def flag_mapper(self) -> "FlagMapper": return self._mapper
+
+	@flag_mapper.setter
+	def flag_mapper(self, value: "FlagMapper"):
+		value._params = self.signature.parameters
+		self._mapper = value
+
+	@property
+	def name(self) -> str: return self._name
 	
+	@property
+	def names(self) -> list[str]: return self._names[:]
+
+	@property
+	def aliases(self) -> set[str]: return set(self._aliases)
+	
+	@property
+	def description(self) -> str | None: return self._desc
+	
+	@description.setter
+	def description(self, value: str): self._desc = value
+
+	@property
+	def long_description(self) -> str | None: return self._long_desc
+	
+	@long_description.setter
+	def long_description(self, value: str): self._long_desc = value
+
+	@property
+	def has_subcommands(self) -> bool: return self in _subcommand_map
+
+	@property
+	def subcommands(self) -> list["Command"]: return list(set(_subcommand_map[self].values())) if self.has_subcommands else []
+
+	@property
+	def all_subcommands(self) -> list[tuple[str, "Command"]]:
+		return [(prefix, command) for subcommand in self.subcommands 
+		  for prefix, command in [("", subcommand)] + [(f"{subcommand.name} {sprefix}", ssubcommand) for sprefix, ssubcommand in subcommand.all_subcommands]]
+
+	@property
+	def signature(self) -> inspect.Signature: return inspect.signature(self._func)
+	
+	@property
+	def parent_prefix(self) -> str: return f"{self.parent.parent_prefix}{self.parent.name} " if self.parent else ""
+
+	@property
+	def fullname(self): return f"{self.parent_prefix}{self.name}"
+
 	def print_help_short(self, prefix="", star_subcommands=True):
 		print(prefix + self.name, end="")
 		if star_subcommands and self.has_subcommands:
 			print("*", end="")
 		if self.aliases:
 			print(f" ({", ".join(self.aliases)})", end="")
-		if self.desc:
-			print(f" - {self.desc}", end="")
+		if self.description:
+			print(f" - {self.description}", end="")
 		print()
 
 	def print_help(self, all_subcommands=False):
-		print(self.fullname())
+		print(self.fullname)
 		if self.aliases:
 			print(f"Aliases: {", ".join(self.aliases)}")
 		if self.parent:
-			print(f"Subcommand of {self.parent.fullname()}")
-		if self.long_desc:
-			print(self.long_desc)
-		elif self.desc:
-			print(self.desc)
+			print(f"Subcommand of {self.parent.fullname}")
+		if self.long_description:
+			print(self.long_description)
+		elif self.description:
+			print(self.description)
 		else:
 			print("No description found")
 		if self.has_subcommands:
@@ -90,35 +138,17 @@ class Command:
 				for command in self.subcommands:
 					command.print_help_short()
 
-	def fullname(self, name: str | None = None):
-		if not name:
-			name = self.name
-		return self.parent.fullname(f"{self.parent.name} {name}") if self.parent else name
-
-	@property
-	def has_subcommands(self) -> bool:
-		return self in _subcommand_map
-	
 	def has_subcommand(self, command):
 		return self.has_subcommands and (command in _subcommand_map[self] or command.endswith("*") and command[:-1] in _subcommand_map[self])
 	
-	@property
-	def subcommands(self) -> list["Command"]:
-		return list(set(_subcommand_map[self].values())) if self.has_subcommands else []
-
 	def subcommand(self, command):
 		return _subcommand_map[self][command[:-1] if command.endswith("*") else command]
-
-	@property
-	def all_subcommands(self) -> list[tuple[str, "Command"]]:
-		return [(prefix, command) for subcommand in self.subcommands 
-		  for prefix, command in [("", subcommand)] + [(f"{subcommand.name} {sprefix}", ssubcommand) for sprefix, ssubcommand in subcommand.all_subcommands]]
 
 class CommandException(Exception): ...
 
 class FlagMapper:
 	def __init__(self):
-		self.params: MappingProxyType[str, inspect.Parameter] = None
+		self._params: MappingProxyType[str, inspect.Parameter] = None
 	
 	@abstractmethod # should be overriden, as it is the only thing to implement
 	def __call__(self, *args: str) -> tuple[list[str], dict[str, any]]:
@@ -152,7 +182,7 @@ def register(name: str | list[str] | None = None, parent: Command | None = None,
 			# no errors should occur after this
 			_commands.append(command)
 			for name in command.names:
-				_command_map[command.fullname(name)] = command
+				_command_map[command.parent_prefix + name] = command
 				if parent:
 					_subcommand_map[parent][name] = command
 
@@ -187,8 +217,8 @@ def _cmd_deco_wrap(wrapper):
 @_cmd_deco_wrap
 def desc(desc: str | None = None, long_desc: str | None = None):
 	def inner(self: Command):
-		self.desc = desc
-		self.long_desc = long_desc
+		self.description = desc
+		self.long_description = long_desc
 	return inner
 
 @register()
