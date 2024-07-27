@@ -17,11 +17,8 @@ def _check_list(errs, errstr):
 def istruthy(word: str) -> bool:
 	return word.lower() in ["y", "yes", "true"]
 
-def iscommandfunc(obj: any):
-	return hasattr(obj, "command_data")
-
-class CommandData:
-	def __init__(self, func: Callable, name: str | list[str], parent: "CommandData | None" = None):
+class Command:
+	def __init__(self, func: Callable, name: str | list[str], parent: "Command | None" = None):
 		self.func = func
 		self.desc: str | None = None
 		self.long_desc: str | None = None
@@ -106,14 +103,14 @@ class CommandData:
 		return self.has_subcommands and (command in _subcommand_map[self] or command.endswith("*") and command[:-1] in _subcommand_map[self])
 	
 	@property
-	def subcommands(self) -> list["CommandData"]:
+	def subcommands(self) -> list["Command"]:
 		return list(set(_subcommand_map[self].values())) if self.has_subcommands else []
 
 	def subcommand(self, command):
 		return _subcommand_map[self][command[:-1] if command.endswith("*") else command]
 
 	@property
-	def all_subcommands(self) -> list[tuple[str, "CommandData"]]:
+	def all_subcommands(self) -> list[tuple[str, "Command"]]:
 		return [(prefix, command) for subcommand in self.subcommands 
 		  for prefix, command in [("", subcommand)] + [(f"{subcommand.name} {sprefix}", ssubcommand) for sprefix, ssubcommand in subcommand.all_subcommands]]
 
@@ -127,42 +124,40 @@ class FlagMapper:
 	def __call__(self, *args: str) -> tuple[list[str], dict[str, any]]:
 		return args, {}
 
-_commands: list[CommandData] = []
-_command_map: dict[str, CommandData] = {}
-_subcommand_map: dict[CommandData, dict[str, CommandData]] = {}
+_commands: list[Command] = []
+_command_map: dict[str, Command] = {}
+_subcommand_map: dict[Command, dict[str, Command]] = {}
 _quit = False
 
 # decorator for registering a command
-def register(name: str | list[str] | None = None, parent: Callable | CommandData | None = None, *, on_load: Callable[[], bool] | None = None):
+def register(name: str | list[str] | None = None, parent: Command | None = None, *, on_load: Callable[[], bool] | None = None):
 	aname = name
 	aparent = parent
-	def inner(func: Callable):
+	def inner(func: Callable) -> Callable | Command:
 		name = aname if aname else func.__name__
 		parent = aparent
 		
 		try:
-			if parent:
-				if iscommandfunc(parent):
-					parent = parent.command_data
-				if not isinstance(parent, CommandData):
-					raise CommandException(f"Invalid parent: {parent} is not a command function or CommandData")
+			if parent and isinstance(parent, Command):
 				_subcommand_map.setdefault(parent, {})
+			elif parent:
+				raise CommandException(f"Invalid parent: {parent} is not a command function or CommandData")
 
-			command_data = CommandData(func, name, parent)
+			command = Command(func, name, parent)
 			command_map = _subcommand_map[parent] if parent else _command_map
-			_check_list((name for name in command_data.names if name in command_map), "Command naming conflict")
+			_check_list((name for name in command.names if name in command_map), "Command naming conflict")
 			if on_load and not on_load():
-				raise CommandException(f"Load function of {command_data} failed")
+				raise CommandException(f"Load function of {command} failed")
 
 			# no errors should occur after this
-			func.command_data = command_data
-			_commands.append(command_data)
-			for name in command_data.names:
-				_command_map[command_data.fullname(name)] = command_data
+			_commands.append(command)
+			for name in command.names:
+				_command_map[command.fullname(name)] = command
 				if parent:
-					_subcommand_map[parent][name] = command_data
+					_subcommand_map[parent][name] = command
 
-			print(f"Registered {command_data}")
+			print(f"Registered {command}")
+			return command
 		except CommandException as e:
 			print(f"Could not register command {func} ({name})")
 			print(e)
@@ -178,20 +173,20 @@ def register(name: str | list[str] | None = None, parent: Callable | CommandData
 
 def _cmd_deco_wrap(wrapper):
 	def outer(*args, **kwargs):
-		def inner(func: Callable):
-			if iscommandfunc(func):
-				wrapper(*args, **kwargs)(func.command_data)
+		def inner(command: Command | Callable):
+			if isinstance(command, Command):
+				wrapper(*args, **kwargs)(command)
 			else:
-				if not hasattr(func, "command_processors"):
-					func.command_processors = []
-				func.command_processors.append(wrapper(*args, **kwargs))
-			return func
+				if not hasattr(command, "command_processors"):
+					command.command_processors = []
+				command.command_processors.append(wrapper(*args, **kwargs))
+			return command
 		return inner
 	return outer
 
 @_cmd_deco_wrap
 def desc(desc: str | None = None, long_desc: str | None = None):
-	def inner(self: CommandData):
+	def inner(self: Command):
 		self.desc = desc
 		self.long_desc = long_desc
 	return inner
@@ -206,9 +201,7 @@ def help(command=None, *args):
 		print("COMMANDS")
 		for command in _commands:
 			command.print_help_short()
-	elif iscommandfunc(command):
-		command.command_data.print_help()
-	elif isinstance(command, CommandData):
+	elif isinstance(command, Command):
 		command.print_help()
 	elif command.lower() in _command_map:
 		# start searching through commands and subcommands
@@ -245,9 +238,9 @@ def reload():
 def clear():
 	print("\033c")
 
-def run(command: Callable | str, *args):
+def run(command: Command | str, *args):
 	global _command_map
-	if iscommandfunc(command):
+	if isinstance(command, Command):
 		command(*args)
 	elif isinstance(command, str) and command.lower() in _command_map:
 		_command_map[command.lower()](*args)
