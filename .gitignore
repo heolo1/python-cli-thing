@@ -1,3 +1,4 @@
 *.json
 .things/**
+test*
 __pycache__
