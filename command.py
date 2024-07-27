@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from typing import Callable
 from types import MappingProxyType
 import inspect, time, sys, os
@@ -36,7 +37,7 @@ class CommandData:
 			self.names = name
 			self.aliases = set(name[1:])
 
-		self.flag_mapper: Callable[(...), tuple[list[any], dict[str, any]]] = fm_none()(self._signature.parameters)
+		self.flag_mapper = FlagMapper()
 
 		_check_list((name for name in self.names if not _valid_command(name)), "Invalid command name")
 
@@ -118,6 +119,14 @@ class CommandData:
 
 class CommandException(Exception): ...
 
+class FlagMapper:
+	def __init__(self):
+		self.params: MappingProxyType[str, inspect.Parameter] = None
+	
+	@abstractmethod # should be overriden, as it is the only thing to implement
+	def __call__(self, *args: str) -> tuple[list[str], dict[str, any]]:
+		return args, {}
+
 _commands: list[CommandData] = []
 _command_map: dict[str, CommandData] = {}
 _subcommand_map: dict[CommandData, dict[str, CommandData]] = {}
@@ -180,49 +189,12 @@ def _cmd_deco_wrap(wrapper):
 		return inner
 	return outer
 
-def _flag_mapper(func: Callable):
-	func.is_flag_mapper = True
-	return func
-
-def _is_flag_mapper(func: Callable):
-	return hasattr(func, "is_flag_mapper")
-
 @_cmd_deco_wrap
 def desc(desc: str | None = None, long_desc: str | None = None):
 	def inner(self: CommandData):
 		self.desc = desc
 		self.long_desc = long_desc
 	return inner
-
-@_cmd_deco_wrap
-def flags(flag_mapper: "FlagMapperType"):
-	if not _is_flag_mapper(flag_mapper):
-		raise AttributeError(f"flag_mapper {flag_mapper} passed in is not a FlagMapperType")
-
-	def inner(self: CommandData):
-		self.flag_mapper = flag_mapper
-	return inner
-
-# @_cmd_deco_wrap
-# def map_flags(**kwargs: dict[str, str | list[str]]):
-# 	def inner(self: CommandData):
-# 		...
-# 	return inner
-
-# @_flag_mapper
-# def fm_none(*args: str) -> tuple[list[str], dict]:
-# 	return args, {}
-
-FlagMapper = Callable[(...), tuple[list[any], dict[str, any]]]
-FlagMapperType = Callable[(...), Callable[[MappingProxyType[str, inspect.Parameter]], FlagMapper]]
-
-@_flag_mapper
-def fm_none() -> Callable[[MappingProxyType[str, inspect.Parameter]], FlagMapper]:
-	def inner1(_: MappingProxyType[str, inspect.Parameter]) -> FlagMapper:
-		def inner2(*args: str) -> tuple[list[any], dict[str, any]]:
-			return args, {}
-		return inner2
-	return inner1
 
 @register()
 @desc("Shows the help menu.",
@@ -266,6 +238,12 @@ def reload():
 	print(f"[{time.ctime(time.time())}] Reloading...")
 	os.execl(sys.executable, sys.executable, *sys.argv)
 
+@register(["clear", "cls"])
+@desc("Clears the terminal.",
+	  "Clears the terminal of all text.")
+def clear():
+	print("\033c")
+
 def run(command: Callable | str, *args):
 	global _command_map
 	if iscommandfunc(command):
@@ -292,3 +270,6 @@ def main():
 
 		if _quit:
 			break
+
+if __name__ == "__main__":
+	main()
