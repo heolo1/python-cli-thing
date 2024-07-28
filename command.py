@@ -23,7 +23,7 @@ class Command:
 		self._desc: str | None = None
 		self._long_desc: str | None = None
 		self._parent = parent
-		self.flag_mapper = FlagMapper()
+		self.arg_mapper = ArgMapper()
 
 		# names
 		if isinstance(name, str):
@@ -51,7 +51,7 @@ class Command:
 			if not no_sub and self.has_subcommand(scmd):
 				return self.subcommand(scmd)(*raw_args[1:], no_sub=scmd.endswith("*"))
 		
-		args, kwargs = self.flag_mapper(*raw_args)
+		args, kwargs = self.arg_mapper(*raw_args)
 
 		return self._func(*args, **kwargs)
 
@@ -59,10 +59,10 @@ class Command:
 	def parent(self) -> "Command | None": return self._parent
 
 	@property
-	def flag_mapper(self) -> "FlagMapper": return self._mapper
+	def arg_mapper(self) -> "ArgMapper": return self._mapper
 
-	@flag_mapper.setter
-	def flag_mapper(self, value: "FlagMapper"):
+	@arg_mapper.setter
+	def arg_mapper(self, value: "ArgMapper"):
 		value.command = self
 		self._mapper = value
 
@@ -146,7 +146,7 @@ class Command:
 
 class CommandException(Exception): ...
 
-class FlagMapper:
+class ArgMapper:
 	def __init__(self):
 		self._command: Command = None
 		self._params: dict[str, inspect.Parameter] = None
@@ -176,24 +176,37 @@ class FlagMapper:
 	@property
 	def has_kwargs(self) -> bool: return self._has_kwargs
 
-class BasicBoolMapper(FlagMapper):
-	def __init__(self, prefix="-"):
+class BasicBoolMapper(ArgMapper):
+	def __init__(self, prefix="-", enable_kebab_case=True):
 		super().__init__()
 		self._prefix = prefix
 		self._flag_defaults: dict[str, bool] = None
+		self._enable_kebab_case = enable_kebab_case
+
+	def _parse_arg_name(self, arg: str) -> str:
+		arg = arg[len(self.prefix):]
+		if self.enable_kebab_case:
+			arg = arg.replace("-", "_")
+		return arg
 
 	@override
 	def __call__(self, *args: str) -> tuple[list[str], dict[str, any]]:
 		no_parse = [arg for arg in args if not arg.startswith(self.prefix)]
-		parse = [arg for arg in args if arg.startswith(self.prefix)]
+		parse = [self._parse_arg_name(arg) for arg in args if arg.startswith(self.prefix)]
 		flags = self.flag_defaults
 
 		for arg in parse:
-			if not self.has_kwargs and arg[1:] not in flags:
-				raise CommandException(f"{self.command.fullname} does not support flag \"{arg}\"")
-			flags[arg[1:]] = True
+			if not self.has_kwargs and arg not in flags:
+				raise CommandException(f"{self.command.fullname} does not support flag \"{self.prefix}{arg}\"")
+			flags[arg] = arg not in flags or not flags[arg]
 		
 		return no_parse, flags
+
+	@property
+	def enable_kebab_case(self) -> bool: return self._enable_kebab_case
+
+	@enable_kebab_case.setter
+	def enable_kebab_case(self, value: bool): self._enable_kebab_case = value
 
 	@property
 	def prefix(self) -> str: return self._prefix
@@ -204,10 +217,10 @@ class BasicBoolMapper(FlagMapper):
 	@property
 	def flag_defaults(self) -> dict[str, bool]: return dict(self._flag_defaults)
 
-	@FlagMapper.command.setter
+	@ArgMapper.command.setter
 	def command(self, value: Command):
 		super(type(self), type(self)).command.fset(self, value) # python...
-		self._flag_defaults = {param_name: False for param_name in self.params.keys()}
+		self._flag_defaults = {param.name: (param.default if param.default is not inspect._empty else False) for param in self.params.values()}
 
 _commands: list[Command] = []
 _command_map: dict[str, Command] = {}
@@ -215,7 +228,7 @@ _subcommand_map: dict[Command, dict[str, Command]] = {}
 _quit = False
 
 # decorator for registering a command
-def register(name: str | list[str] | None = None, *, parent: Command | None = None, flag_mapper: FlagMapper = None, on_load: Callable[[], bool] | None = None):
+def register(name: str | list[str] | None = None, *, parent: Command | None = None, arg_mapper: ArgMapper = None, on_load: Callable[[], bool] | None = None):
 	aname = name
 	aparent = parent
 	def inner(func: Callable) -> Callable | Command:
@@ -234,9 +247,10 @@ def register(name: str | list[str] | None = None, *, parent: Command | None = No
 			if on_load and not on_load():
 				raise CommandException(f"Load function of {command} failed")
 
+			if arg_mapper:
+				command.arg_mapper = arg_mapper
+
 			# no errors should occur after this
-			if flag_mapper:
-				command.flag_mapper = flag_mapper
 
 			_commands.append(command)
 			for name in command.names:
