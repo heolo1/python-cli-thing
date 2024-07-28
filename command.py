@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from typing import Callable, override
+from typing import Callable, Iterator, override
 from types import MappingProxyType
 import inspect, time, sys, os
 
@@ -176,7 +176,7 @@ class ArgMapper:
 	@property
 	def has_kwargs(self) -> bool: return self._has_kwargs
 
-class BasicBoolMapper(ArgMapper):
+class BoolMapper(ArgMapper):
 	def __init__(self, prefix="-", enable_kebab_case=True):
 		super().__init__()
 		self._prefix = prefix
@@ -212,7 +212,7 @@ class BasicBoolMapper(ArgMapper):
 	def prefix(self) -> str: return self._prefix
 
 	@prefix.setter
-	def prefix(self, value: str): self.prefix = value
+	def prefix(self, value: str): self._prefix = value
 
 	@property
 	def flag_defaults(self) -> dict[str, bool]: return dict(self._flag_defaults)
@@ -221,6 +221,73 @@ class BasicBoolMapper(ArgMapper):
 	def command(self, value: Command):
 		super(type(self), type(self)).command.fset(self, value) # python...
 		self._flag_defaults = {param.name: (param.default if param.default is not inspect._empty else False) for param in self.params.values()}
+
+class StringMapper(ArgMapper):
+	def __init__(self, prefix="-", set_token="=", enable_kebab_case=True):
+		super().__init__()
+		self.prefix = prefix
+		self.set_token = set_token
+		self.enable_kebab_case = enable_kebab_case
+		self._flag_minimum: set[str] = None
+		self._flag_maximum: set[str] = None
+
+	def _parse_arg_name(self, arg: str) -> str:
+		arg = arg[len(self.prefix):]
+		if self.enable_kebab_case:
+			arg = arg.replace("-", "_")
+		return arg
+
+	def _parse_iter(self, *args: str) -> Iterator[tuple[str, bool]]:
+		it = iter(args)
+		for arg in it:
+			is_flag = arg.startswith(self.prefix)
+			if is_flag:
+				if self.set_token in arg:
+					arg, value = arg.split(self.set_token, 1)
+					arg = f"{self._parse_arg_name(arg)}{self.set_token}{value}"
+				else:
+					try:
+						arg = f"{self._parse_arg_name(arg)}{self.set_token}{next(it)}"
+					except StopIteration:
+						raise CommandException(f"Not enough args for flag {arg}")
+			yield arg, is_flag
+
+	@override
+	def __call__(self, *args: str) -> tuple[list[str], dict[str, any]]:
+		arg_and_flag = list(self._parse_iter(*args))
+		flags = dict(arg.split(self.set_token, 1) for arg, is_flag in arg_and_flag if is_flag)
+
+		if self._flag_minimum - flags.keys():
+			raise CommandException(f"Missing required flags: {", ".join(self._flag_minimum - flags.keys())}")
+
+		if not self.has_kwargs and flags.keys() - self._flag_maximum:
+			raise CommandException(f"Unknown flags: {", ".join(flags.keys() - self._flag_maximum)}")
+
+		return [arg for arg, is_flag in arg_and_flag if not is_flag], flags
+
+	@property
+	def enable_kebab_case(self) -> bool: return self._enable_kebab_case
+
+	@enable_kebab_case.setter
+	def enable_kebab_case(self, value: bool): self._enable_kebab_case = value
+
+	@property
+	def prefix(self) -> str: return self._prefix
+
+	@prefix.setter
+	def prefix(self, value: str): self._prefix = value
+
+	@property
+	def set_token(self) -> str: return self._set_token
+
+	@set_token.setter
+	def set_token(self, value: str): self._set_token = value
+	
+	@ArgMapper.command.setter
+	def command(self, value: Command):
+		super(type(self), type(self)).command.fset(self, value)
+		self._flag_minimum = {name for name, param in self.kw_params.items() if param.default is inspect._empty}
+		self._flag_maximum = set(self.kw_params.keys())
 
 _commands: list[Command] = []
 _command_map: dict[str, Command] = {}
