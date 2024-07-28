@@ -19,12 +19,17 @@ def on_load2() -> bool:
 	print("Set value2")
 	return True
 
-@command.register(parent=example, arg_mapper=command.BasicBoolMapper(), on_load=on_load2)
+@command.register(parent=example, arg_mapper=command.BoolMapper(), on_load=on_load2)
 @command.desc("Prints the numbers generated.", "Prints the numbers randomly generated on load.")
 def value(*, a = True, b, other_arg):
 	print(f"{value1=}")
 	print(f"{value2=}")
 	print(f"{a=}, {b=}, {other_arg=}")
+
+@command.register("print", parent=example, arg_mapper=command.StringMapper())
+@command.desc("Prints out the supplied arguments.", "Prints out the values of all of the supplied flags and values.")
+def p(*, a="hello", b, c, d="something else"):
+	print(f"{a=}, {b=}, {c=}, {d=}")
 
 def main():
 	command.main()
