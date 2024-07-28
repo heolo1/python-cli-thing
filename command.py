@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from typing import Callable
+from typing import Callable, override
 from types import MappingProxyType
 import inspect, time, sys, os
 
@@ -45,13 +45,13 @@ class Command:
 	def __repr__(self):
 		return f"Command[{self.fullname}{"*" if self.aliases else ""}]"
 	
-	def __call__(self, arg: str | None = None, *raw_args: str, no_sub=False):
-		if not arg:
-			return self._func()
-		elif not no_sub and self.has_subcommand(arg):
-			return self.subcommand(arg)(*raw_args, no_sub=arg.endswith("*"))
+	def __call__(self, *raw_args: str, no_sub=False):
+		if raw_args:
+			scmd = raw_args[0]
+			if not no_sub and self.has_subcommand(scmd):
+				return self.subcommand(scmd)(*raw_args[1:], no_sub=scmd.endswith("*"))
 		
-		args, kwargs = self.flag_mapper(arg, *raw_args)
+		args, kwargs = self.flag_mapper(*raw_args)
 
 		return self._func(*args, **kwargs)
 
@@ -63,7 +63,7 @@ class Command:
 
 	@flag_mapper.setter
 	def flag_mapper(self, value: "FlagMapper"):
-		value._params = self.signature.parameters
+		value.command = self
 		self._mapper = value
 
 	@property
@@ -148,11 +148,66 @@ class CommandException(Exception): ...
 
 class FlagMapper:
 	def __init__(self):
-		self._params: MappingProxyType[str, inspect.Parameter] = None
+		self._command: Command = None
+		self._params: dict[str, inspect.Parameter] = None
+		self._kw_params: dict[str, inspect.Parameter] = None
+		self._has_kwargs: bool = False
 	
 	@abstractmethod # should be overriden, as it is the only thing to implement
 	def __call__(self, *args: str) -> tuple[list[str], dict[str, any]]:
 		return args, {}
+
+	@property
+	def command(self) -> Command: return self._command
+
+	@command.setter
+	def command(self, value: Command):
+		self._command = value
+		self._params = dict(value.signature.parameters)
+		self._kw_params = {k: v for k, v in self._params.items() if v.kind == inspect.Parameter.KEYWORD_ONLY}
+		self._has_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in self._params.values())
+
+	@property
+	def params(self) -> dict[str, inspect.Parameter]: return self._params
+
+	@property
+	def kw_params(self) -> dict[str, inspect.Parameter]: return self._kw_params
+
+	@property
+	def has_kwargs(self) -> bool: return self._has_kwargs
+
+class BasicBoolMapper(FlagMapper):
+	def __init__(self, prefix="-"):
+		super().__init__()
+		self._prefix = prefix
+		self._flag_defaults: dict[str, bool] = None
+
+	@override
+	def __call__(self, *args: str) -> tuple[list[str], dict[str, any]]:
+		no_parse = [arg for arg in args if not arg.startswith(self.prefix)]
+		parse = [arg for arg in args if arg.startswith(self.prefix)]
+		flags = self.flag_defaults
+
+		for arg in parse:
+			if not self.has_kwargs and arg[1:] not in flags:
+				raise CommandException(f"{self.command.fullname} does not support flag \"{arg}\"")
+			flags[arg[1:]] = True
+		
+		return no_parse, flags
+
+	@property
+	def prefix(self) -> str: return self._prefix
+
+	@prefix.setter
+	def prefix(self, value: str): self.prefix = value
+
+	@property
+	def flag_defaults(self) -> dict[str, bool]: return dict(self._flag_defaults)
+
+	@FlagMapper.command.setter
+	def command(self, value: Command):
+		super(type(self), type(self)).command.fset(self, value) # python...
+		self._flag_defaults = {param_name: False for param_name in self.params.keys()}
 
 _commands: list[Command] = []
 _command_map: dict[str, Command] = {}
@@ -160,7 +215,7 @@ _subcommand_map: dict[Command, dict[str, Command]] = {}
 _quit = False
 
 # decorator for registering a command
-def register(name: str | list[str] | None = None, parent: Command | None = None, *, on_load: Callable[[], bool] | None = None):
+def register(name: str | list[str] | None = None, *, parent: Command | None = None, flag_mapper: FlagMapper = None, on_load: Callable[[], bool] | None = None):
 	aname = name
 	aparent = parent
 	def inner(func: Callable) -> Callable | Command:
@@ -180,6 +235,9 @@ def register(name: str | list[str] | None = None, parent: Command | None = None,
 				raise CommandException(f"Load function of {command} failed")
 
 			# no errors should occur after this
+			if flag_mapper:
+				command.flag_mapper = flag_mapper
+
 			_commands.append(command)
 			for name in command.names:
 				_command_map[command.parent_prefix + name] = command
