@@ -31,6 +31,10 @@ def value(*, a = True, b, other_arg):
 def p(*, a="hello", b, c, d="something else"):
 	print(f"{a=}, {b=}, {c=}, {d=}")
 
+@command.register(parent=example, arg_mapper=command.TypeMapper())
+def types(*, a: int, b: int = 5, c: bool):
+	print(f"{a=}, {b=}, {c=}")
+
 def main():
 	command.main()
 

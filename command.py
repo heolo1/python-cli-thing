@@ -298,6 +298,8 @@ class TypeMapper(ArgMapper):
 
 	@override
 	def __call__(self, *args: str) -> tuple[list[str], dict[str, any]]:
+		print("called")
+		
 		args = []
 		kwargs = self.flag_defaults
 
@@ -492,7 +494,7 @@ def help(command=None, *args):
 	if not command:
 		print("COMMANDS")
 		for command in _commands:
-			command.print_help_short()
+			command.print_help_short(command.parent_prefix)
 	elif isinstance(command, Command):
 		command.print_help()
 	elif command.lower() in _command_map:
