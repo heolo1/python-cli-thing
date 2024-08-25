@@ -298,14 +298,12 @@ class TypeMapper(ArgMapper):
 
 	@override
 	def __call__(self, *args: str) -> tuple[list[str], dict[str, any]]:
-		print("called")
-		
-		args = []
+		p_args = []
 		kwargs = self.flag_defaults
 
 		for arg, is_flag in self._parse_iter(*args):
 			if not is_flag:
-				args.append(arg)
+				p_args.append(arg)
 				continue
 			flag, value = arg.split(self.set_token, 1)
 			if not self.has_kwargs and flag not in self.kw_params:
@@ -315,7 +313,7 @@ class TypeMapper(ArgMapper):
 		if self.kw_params.keys() - kwargs.keys():
 			raise CommandException(f"Missing required flags: {self.kw_params.keys() - kwargs.keys()}")
 
-		return args, kwargs
+		return p_args, kwargs
 
 	@property
 	def set_token(self) -> str: return self._set_token
