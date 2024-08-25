@@ -1,6 +1,7 @@
 from abc import abstractmethod
-from typing import Callable, Iterator, override
-from types import MappingProxyType
+from typing import Callable, Iterator, override, Union
+import typing
+from types import NoneType, UnionType
 import inspect, time, sys, os
 
 def _valid_command(name: str) -> bool:
@@ -176,18 +177,30 @@ class ArgMapper:
 	@property
 	def has_kwargs(self) -> bool: return self._has_kwargs
 
-class BoolMapper(ArgMapper):
-	def __init__(self, prefix="-", enable_kebab_case=True):
-		super().__init__()
-		self._prefix = prefix
-		self._flag_defaults: dict[str, bool] = None
-		self._enable_kebab_case = enable_kebab_case
+	@property
+	def enable_kebab_case(self) -> bool: return self._enable_kebab_case
+
+	@enable_kebab_case.setter
+	def enable_kebab_case(self, value: bool): self._enable_kebab_case = value
+
+	@property
+	def prefix(self) -> str: return self._prefix
+
+	@prefix.setter
+	def prefix(self, value: str): self._prefix = value
 
 	def _parse_arg_name(self, arg: str) -> str:
 		arg = arg[len(self.prefix):]
 		if self.enable_kebab_case:
 			arg = arg.replace("-", "_")
 		return arg
+
+class BoolMapper(ArgMapper):
+	def __init__(self, prefix="-", enable_kebab_case=True):
+		super().__init__()
+		self._prefix = prefix
+		self._flag_defaults: dict[str, bool] = None
+		self._enable_kebab_case = enable_kebab_case
 
 	@override
 	def __call__(self, *args: str) -> tuple[list[str], dict[str, any]]:
@@ -201,18 +214,6 @@ class BoolMapper(ArgMapper):
 			flags[arg] = arg not in flags or not flags[arg]
 		
 		return no_parse, flags
-
-	@property
-	def enable_kebab_case(self) -> bool: return self._enable_kebab_case
-
-	@enable_kebab_case.setter
-	def enable_kebab_case(self, value: bool): self._enable_kebab_case = value
-
-	@property
-	def prefix(self) -> str: return self._prefix
-
-	@prefix.setter
-	def prefix(self, value: str): self._prefix = value
 
 	@property
 	def flag_defaults(self) -> dict[str, bool]: return dict(self._flag_defaults)
@@ -230,12 +231,6 @@ class StringMapper(ArgMapper):
 		self.enable_kebab_case = enable_kebab_case
 		self._flag_minimum: set[str] = None
 		self._flag_maximum: set[str] = None
-
-	def _parse_arg_name(self, arg: str) -> str:
-		arg = arg[len(self.prefix):]
-		if self.enable_kebab_case:
-			arg = arg.replace("-", "_")
-		return arg
 
 	def _parse_iter(self, *args: str) -> Iterator[tuple[str, bool]]:
 		it = iter(args)
@@ -266,18 +261,6 @@ class StringMapper(ArgMapper):
 		return [arg for arg, is_flag in arg_and_flag if not is_flag], flags
 
 	@property
-	def enable_kebab_case(self) -> bool: return self._enable_kebab_case
-
-	@enable_kebab_case.setter
-	def enable_kebab_case(self, value: bool): self._enable_kebab_case = value
-
-	@property
-	def prefix(self) -> str: return self._prefix
-
-	@prefix.setter
-	def prefix(self, value: str): self._prefix = value
-
-	@property
 	def set_token(self) -> str: return self._set_token
 
 	@set_token.setter
@@ -289,9 +272,110 @@ class StringMapper(ArgMapper):
 		self._flag_minimum = {name for name, param in self.kw_params.items() if param.default is inspect._empty}
 		self._flag_maximum = set(self.kw_params.keys())
 
+class TypeMapper(ArgMapper):
+	def __init__(self, prefix="-", set_token="=", enable_kebab_case=True):
+		super().__init__()
+		self.prefix = prefix
+		self.set_token = set_token
+		self.enable_kebab_case = enable_kebab_case
+	
+	def _parse_iter(self, *args: str) -> Iterator[tuple[str, bool]]:
+		it = iter(args)
+		for arg in it:
+			if not arg.startswith(self.prefix):
+				yield arg, False
+			elif self.set_token in arg:
+				arg, value = arg.split(self.set_token, 1)
+				yield f"{self._parse_arg_name(arg)}{self.set_token}{value}", True
+			elif not self.requires_param(self._parse_arg_name(arg)):
+				arg = self._parse_arg_name(arg)
+				yield f"{arg}{self.set_token}{not self._get_default_flag_value(arg)}", True
+			else:
+				try:
+					yield f"{self._parse_arg_name(arg)}{self.set_token}{next(it)}", True
+				except StopIteration:
+					raise CommandException(f"Not enough args for flag {arg}")
+
+	@override
+	def __call__(self, *args: str) -> tuple[list[str], dict[str, any]]:
+		args = []
+		kwargs = self.flag_defaults
+
+		for arg, is_flag in self._parse_iter(*args):
+			if not is_flag:
+				args.append(arg)
+				continue
+			flag, value = arg.split(self.set_token, 1)
+			if not self.has_kwargs and flag not in self.kw_params:
+				raise CommandException(f"Command does not accept flag {flag}")
+			kwargs[flag] = _conv_value(value, self.kw_params[flag].annotation)
+
+		if self.kw_params.keys() - kwargs.keys():
+			raise CommandException(f"Missing required flags: {self.kw_params.keys() - kwargs.keys()}")
+
+		return args, kwargs
+
+	@property
+	def set_token(self) -> str: return self._set_token
+
+	@set_token.setter
+	def set_token(self, value: str): self._set_token = value
+	
+	def requires_param(self, arg: str) -> bool:
+		return self.kw_params[arg].annotation is not bool
+
+	@property
+	def flag_defaults(self) -> dict[str, any]:
+		return {name: default for name, has_default, default in [(param.name, *_get_default_value(param.annotation)) for param in self.kw_params.values()] if has_default} \
+			 | {param.name: param.default for param in self.kw_params.values() if param.default is not inspect._empty}
+
+def _get_default_value(t: type) -> tuple[bool, any]:
+	if t is bool:
+		return True, False
+	if t is NoneType or t is inspect._empty:
+		return True, None
+	if t is str:
+		return True, ""
+	if t is int:
+		return True, 0
+	if t is float:
+		return True, 0.
+	if typing.get_origin(t) is Union or typing.get_origin(t) is UnionType:
+		if NoneType in typing.get_args(t):
+			return True, None
+		for subt in typing.get_args(t):
+			default_found, default = _get_default_value(subt)
+			if default_found:
+				return True, default
+	if t is list or typing.get_origin(t) is list:
+		return True, []
+	if typing.get_origin(t) is tuple:
+		default_found, default = zip(*map(_get_default_value, typing.get_args(t)))
+		if all(default_found):
+			return True, tuple(default)
+	if t is dict or typing.get_origin(t) is dict:
+		return True, {}
+	return False, None
+
+def _conv_value(val: str, t: type):
+	if typing.get_origin(t) is Union or typing.get_origin(t) is UnionType:
+		for subt in typing.get_args(t):
+			if subt is NoneType:
+				continue
+			else:
+				try:
+					return _conv_value(val, subt)
+				except CommandException:
+					pass
+		raise CommandException(f"Unable to convert argument to any of types {typing.get_args(t)}")
+	if t not in _type_conv_map:
+		raise CommandException(f"Unable to convert argument to type {t}")
+	return _type_conv_map[t](val)
+
 _commands: list[Command] = []
 _command_map: dict[str, Command] = {}
 _subcommand_map: dict[Command, dict[str, Command]] = {}
+_type_conv_map: dict[type, Callable[[str], any]] = {}
 _quit = False
 
 # decorator for registering a command
@@ -359,6 +443,45 @@ def desc(desc: str | None = None, long_desc: str | None = None):
 		self.description = desc
 		self.long_description = long_desc
 	return inner
+
+def register_type_conv(conv_type: type) -> Callable[[Callable[[str], type]], Callable[[str], type]]:
+	def inner(func: Callable[[str], conv_type]) -> Callable[[str], conv_type]:
+		_type_conv_map[conv_type] = func
+		return func
+	return inner
+
+@register_type_conv(bool)
+def conv_bool(arg: str) -> bool:
+	if arg.lower() in ["false", "f", "no", "n", "0"]:
+		return False
+	elif arg.lower() in ["true", "t", "yes", "y", "1"]:
+		return True
+	else:
+		raise CommandException(f"Could not parse bool from argument \"{arg}\"")
+
+@register_type_conv(NoneType)
+def conv_none(_: str) -> None:
+	return None
+
+@register_type_conv(str)
+@register_type_conv(inspect._empty) # do not convert inspect._empty
+def conv_str(arg: str) -> str:
+	return arg
+
+@register_type_conv(int)
+def conv_int(arg: str) -> int:
+	try:
+		base = {"b": 2, "o": 8, "x": 16}
+		return int(arg[1:] if arg[0].lower() in base else arg, base.get(arg[0].lower(), 10))
+	except ValueError as e:
+		raise CommandException(e)
+
+@register_type_conv(float)
+def conv_float(arg: str) -> float:
+	try:
+		return float(arg)
+	except ValueError as e:
+		raise CommandException(e)
 
 @register()
 @desc("Shows the help menu.",
